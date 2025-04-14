@@ -23,7 +23,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doAfterTextChanged
-
+import androidx.core.graphics.toColorInt
 
 class MainActivity : AppCompatActivity() {
     private lateinit var mediaProjectionManager: MediaProjectionManager
@@ -36,8 +36,8 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge(
-            statusBarStyle = SystemBarStyle.dark(Color.parseColor("#33000000")),
-            navigationBarStyle = SystemBarStyle.dark(Color.parseColor("#33000000")),
+            statusBarStyle = SystemBarStyle.dark("#33000000".toColorInt()),
+            navigationBarStyle = SystemBarStyle.dark("#33000000".toColorInt()),
         )
         setContentView(R.layout.activity_main)
         mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager

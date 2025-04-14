@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.content.res.Resources
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
@@ -28,6 +29,7 @@ import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import androidx.core.graphics.createBitmap
 
 class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
@@ -50,12 +52,12 @@ class ScreenCaptureService : Service() {
                     val plane = image.planes[0]
                     val width = plane.rowStride / plane.pixelStride
                     val bitmap = if (width > image.width) {
-                        Bitmap.createBitmap(width, image.height, Bitmap.Config.ARGB_8888).let {
+                        createBitmap(width, image.height).let {
                             it.copyPixelsFromBuffer(plane.buffer)
                             Bitmap.createBitmap(it, 0, 0, image.width, image.height)
                         }
                     } else {
-                        Bitmap.createBitmap(image.width, image.height, Bitmap.Config.ARGB_8888).also {
+                        createBitmap(image.width, image.height).also {
                             it.copyPixelsFromBuffer(plane.buffer)
                         }
                     }
@@ -112,7 +114,13 @@ class ScreenCaptureService : Service() {
         if (isStartCommand(intent)) {
             // create notification
             val notification = NotificationUtils.getNotification(this)
-            startForeground(notification.first, notification.second)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                startForeground(
+                    notification.first,
+                    notification.second,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
+                )
+            }
 
             httpServer = HttpServer(
                 context = this,
@@ -142,8 +150,7 @@ class ScreenCaptureService : Service() {
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (mediaProjection == null && data != null) {
             mediaProjection = mpManager.getMediaProjection(resultCode, data)
-            // create virtual display depending on device width / height
-            createVirtualDisplay()
+            mediaProjection?.registerCallback(mediaProjectionStopCallback, handler)
 
             // register orientation change callback
             orientationChangeCallback = object : OrientationEventListener(this) {
@@ -151,10 +158,12 @@ class ScreenCaptureService : Service() {
                     if (orientation != currentRotation) {
                         currentRotation = orientation
                         try {
-                            virtualDisplay?.release()
-                            imageReader?.setOnImageAvailableListener(null, null)
-                            // re-create virtual display depending on device width / height
-                            createVirtualDisplay()
+//                            virtualDisplay?.release()
+//                            imageReader?.setOnImageAvailableListener(null, null)
+//                            // re-create virtual display depending on device width / height
+//                            createVirtualDisplay()
+
+//                            virtualDisplay?.resize(currentWidth, currentWidth, density)
                         } catch (e: Exception) {
                             e.printStackTrace()
                         }
@@ -166,8 +175,8 @@ class ScreenCaptureService : Service() {
                 }
             }
 
-            // register media projection stop callback
-            mediaProjection?.registerCallback(mediaProjectionStopCallback, handler)
+            // create virtual display depending on device width / height
+            createVirtualDisplay()
         }
     }
 
@@ -186,11 +195,11 @@ class ScreenCaptureService : Service() {
 
         // start capture reader
         imageReader = ImageReader.newInstance(currentWidth, currentHeight, PixelFormat.RGBA_8888, 2)
+        imageReader?.setOnImageAvailableListener(imageAvailableListener, imageThreadHandler)
         virtualDisplay = mediaProjection?.createVirtualDisplay(
             "Screen sharing", currentWidth, currentHeight, density,
             virtualDisplayFlags, imageReader?.surface, null, imageThreadHandler
         )
-        imageReader?.setOnImageAvailableListener(imageAvailableListener, imageThreadHandler)
     }
 
     private fun stopProjection() {
@@ -206,22 +215,20 @@ class ScreenCaptureService : Service() {
 
         fun getNotification(context: Context): Pair<Int, Notification> {
             val notificationManager = context.getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(
-                    NOTIFICATION_CHANNEL_ID,
-                    NOTIFICATION_CHANNEL_NAME,
-                    NotificationManager.IMPORTANCE_LOW
-                )
-                channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
-                notificationManager.createNotificationChannel(channel)
-            }
+            val channel = NotificationChannel(
+                NOTIFICATION_CHANNEL_ID,
+                NOTIFICATION_CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_LOW
+            )
+            channel.lockscreenVisibility = Notification.VISIBILITY_PRIVATE
+            notificationManager.createNotificationChannel(channel)
             val notification = NotificationCompat.Builder(context, NOTIFICATION_CHANNEL_ID)
                 .setSmallIcon(android.R.mipmap.sym_def_app_icon)
                 .setContentTitle("Screen sharing")
 //                .setContentText("Screen sharing")
                 .setOngoing(true)
-                .setCategory(Notification.CATEGORY_SERVICE)
-                .setPriority(Notification.PRIORITY_LOW)
+                .setCategory(NotificationCompat.CATEGORY_SERVICE)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setShowWhen(true)
                 .build()
             notificationManager.notify(NOTIFICATION_ID, notification)
@@ -236,12 +243,15 @@ class ScreenCaptureService : Service() {
         private const val STOP = "STOP"
 
         fun startService(context: Context, resultCode: Int, data: Intent?) {
-            context.startService(
-                Intent(context, ScreenCaptureService::class.java)
-                    .setAction(START)
-                    .putExtra(RESULT_CODE, resultCode)
-                    .putExtra(DATA, data)
-            )
+            val intent = Intent(context, ScreenCaptureService::class.java)
+                .setAction(START)
+                .putExtra(RESULT_CODE, resultCode)
+                .putExtra(DATA, data)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
         }
 
         fun stopService(context: Context) {
