@@ -9,14 +9,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 import java.security.MessageDigest
-import java.util.LinkedList
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -127,7 +125,6 @@ internal class HttpServerData(
     @Volatile internal var pin: String = ""
     @Volatile internal var blockAddress: Boolean = false
     @Volatile internal var streamAddress: String = ""
-    @Volatile internal var jpegFallbackAddress: String = ""
 
     private val statisticScope = CoroutineScope(Job() + Dispatchers.Default)
     private val clients = ConcurrentHashMap<String, Client>()
@@ -145,7 +142,6 @@ internal class HttpServerData(
 //        blockAddress = mjpegSettings.data.value.blockAddress
         val streamAddressBase = if (enablePin) randomString(16) else "stream"
         streamAddress = "$streamAddressBase.mjpeg"
-        jpegFallbackAddress = "$streamAddressBase.jpeg"
     }
 
 //    init {

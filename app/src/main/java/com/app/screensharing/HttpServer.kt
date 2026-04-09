@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.RectF
 import android.util.Log
+import androidx.core.graphics.createBitmap
 import io.ktor.http.CacheControl
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -70,7 +71,7 @@ import java.net.SocketException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import androidx.core.graphics.createBitmap
+import kotlin.math.roundToInt
 
 fun Context.getFileFromAssets(fileName: String): ByteArray {
     return assets.open(fileName).use { inputStream -> inputStream.readBytes() }
@@ -93,6 +94,8 @@ internal class HttpServer(
     private val favicon: ByteArray = context.getFileFromAssets("favicon.ico")
     private val logoSvg: ByteArray = context.getFileFromAssets("sym_def_app_icon.svg")
     private val baseIndexHtml = String(context.getFileFromAssets("index.html"), StandardCharsets.UTF_8)
+        .replace("BACKGROUND_COLOR", "#000000")
+        .replace("%ERROR%", "Unable to load stream")
 //        .replace("%CONNECTING%", context.getString(R.string.mjpeg_html_stream_connecting))
 //        .replace("%STREAM_REQUIRE_PIN%", context.getString(R.string.mjpeg_html_stream_require_pin))
 //        .replace("%ENTER_PIN%", context.getString(R.string.mjpeg_html_enter_pin))
@@ -213,24 +216,21 @@ internal class HttpServer(
 
         @OptIn(ExperimentalCoroutinesApi::class)
         val mjpegSharedFlow = bitmapStateFlow
-            .map {
-                var bitmap = it
-                val cropRect = Settings.cropRect
-                if ((cropRect.width() < bitmap.width && cropRect.height() <= bitmap.height) ||
-                    (cropRect.height() < bitmap.height && cropRect.width() <= bitmap.width)
-                ) {
-                    bitmap = Bitmap.createBitmap(
-                        bitmap,
-                        cropRect.left.toInt(),
-                        cropRect.top.toInt(),
-                        cropRect.width().toInt(),
-                        cropRect.height().toInt()
-                    )
+            .map { sourceBitmap ->
+                val bitmap = cropBitmap(sourceBitmap)
+                try {
+                    resultJpegStream.reset()
+                    if (!bitmap.compress(Bitmap.CompressFormat.JPEG, Settings.imageQuality, resultJpegStream)) {
+                        ByteArray(0)
+                    } else {
+                        resultJpegStream.toByteArray()
+                    }
+                } finally {
+                    if (bitmap !== sourceBitmap) {
+                        bitmap.recycle()
+                    }
+                    sourceBitmap.recycle()
                 }
-                resultJpegStream.reset()
-                bitmap.compress(Bitmap.CompressFormat.JPEG, Settings.imageQuality, resultJpegStream)
-                bitmap.recycle()
-                resultJpegStream.toByteArray()
             }
             .filter { it.isNotEmpty() }
 //            .onEach { jpeg -> lastJPEG.set(jpeg) }
@@ -404,6 +404,26 @@ internal class HttpServer(
         if (isActive) send(JSONObject().put("type", type).apply { if (data != null) put("data", data) }.toString())
     }
 
+    private fun cropBitmap(sourceBitmap: Bitmap): Bitmap {
+        val cropRect = Settings.cropRect
+        val sourceWidth = Settings.sourceWidth
+        val sourceHeight = Settings.sourceHeight
+        if (sourceWidth <= 0 || sourceHeight <= 0) return sourceBitmap
+
+        val scaleX = sourceBitmap.width.toFloat() / sourceWidth
+        val scaleY = sourceBitmap.height.toFloat() / sourceHeight
+
+        val left = (cropRect.left * scaleX).roundToInt().coerceIn(0, sourceBitmap.width - 1)
+        val top = (cropRect.top * scaleY).roundToInt().coerceIn(0, sourceBitmap.height - 1)
+        val right = (cropRect.right * scaleX).roundToInt().coerceIn(left + 1, sourceBitmap.width)
+        val bottom = (cropRect.bottom * scaleY).roundToInt().coerceIn(top + 1, sourceBitmap.height)
+
+        val width = right - left
+        val height = bottom - top
+        if (width >= sourceBitmap.width && height >= sourceBitmap.height) return sourceBitmap
+        return Bitmap.createBitmap(sourceBitmap, left, top, width, height)
+    }
+
     companion object {
         const val PORT = 8081
 
@@ -430,7 +450,13 @@ internal class HttpServer(
         var enablePin = false
         var pin = "123456"
         var cropRect = RectF()
+        @Volatile
+        var sourceWidth = 0
+        @Volatile
+        var sourceHeight = 0
         var imageQuality = 50
+        var maxCaptureDimension = 1280
+        var maxFps = 15
     }
 }
 

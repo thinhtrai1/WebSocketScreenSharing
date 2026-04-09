@@ -310,6 +310,13 @@
     var websocket = null;
     var showStreamTimeoutId = null;
     var MJPEGErrorCounter = 0;
+    function showError() {
+      connectDiv.style.visibility = "hidden";
+      pinDiv.style.visibility = "hidden";
+      blockedDiv.style.visibility = "hidden";
+      streamDiv.style.visibility = "hidden";
+      errorDiv.style.visibility = "visible";
+    }
     function connect() {
       connectDiv.style.visibility = "visible";
       pinDiv.style.visibility = "hidden";
@@ -380,7 +387,7 @@
           return;
         }
         window.DD_LOGS && DD_LOGS.logger.error("websocket.onmessage. Unknown data:", {
-          message: e.data
+          message: msg.data
         });
       };
     }
@@ -419,15 +426,10 @@
           result: "error"
         });
         MJPEGErrorCounter++;
-        connectDiv.style.visibility = "visible";
         if (MJPEGErrorCounter > 5) {
-          streamDiv.style.visibility = "visible";
-          var splitUrl = url.split(".mjpeg");
-          var baseUrl = splitUrl[0] + ".jpeg" + splitUrl[1] + "&t=";
-          setInterval(function () {
-            stream.src = baseUrl + Math.random();
-          }, 500);
+          showError();
         } else {
+          connectDiv.style.visibility = "visible";
           showStreamTimeoutId = setTimeout(function () {
             return showStream(url);
           }, 200);

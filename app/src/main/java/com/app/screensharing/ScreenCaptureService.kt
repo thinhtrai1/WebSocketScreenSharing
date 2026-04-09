@@ -23,46 +23,53 @@ import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
-import android.os.Process
+import android.os.SystemClock
 import android.view.OrientationEventListener
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import androidx.core.graphics.createBitmap
+import kotlinx.coroutines.runBlocking
+import kotlin.math.roundToInt
 
 class ScreenCaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var imageReader: ImageReader? = null
-    private var handler: Handler? = null
-    private val imageThread: HandlerThread by lazy {
-        HandlerThread("ImageThread", Process.THREAD_PRIORITY_BACKGROUND)
-    }
-    private val imageThreadHandler: Handler by lazy { Handler(imageThread.looper) }
+    private val serviceHandler by lazy { Handler(Looper.getMainLooper()) }
+    private var imageThread: HandlerThread? = null
+    private var imageThreadHandler: Handler? = null
     private var virtualDisplay: VirtualDisplay? = null
     private val density = Resources.getSystem().displayMetrics.densityDpi
     private var currentWidth = 0
     private var currentHeight = 0
     private var currentRotation = 0
+    private var lastDeliveredFrameTimestampNs = 0L
     private var orientationChangeCallback: OrientationEventListener? = null
     private val imageAvailableListener = ImageReader.OnImageAvailableListener {
         try {
+            val server = httpServer ?: return@OnImageAvailableListener
             imageReader?.acquireLatestImage()?.use { image ->
-                httpServer?.apply {
-                    val plane = image.planes[0]
-                    val width = plane.rowStride / plane.pixelStride
-                    val bitmap = if (width > image.width) {
-                        createBitmap(width, image.height).let {
-                            it.copyPixelsFromBuffer(plane.buffer)
-                            Bitmap.createBitmap(it, 0, 0, image.width, image.height)
-                        }
-                    } else {
-                        createBitmap(image.width, image.height).also {
-                            it.copyPixelsFromBuffer(plane.buffer)
-                        }
-                    }
-                    setBitmap(bitmap)
+                val nowNs = image.timestamp.takeIf { it > 0L } ?: SystemClock.elapsedRealtimeNanos()
+                if (nowNs - lastDeliveredFrameTimestampNs < 1_000_000_000L / HttpServer.Settings.maxFps) {
+                    return@use
                 }
+                lastDeliveredFrameTimestampNs = nowNs
+
+                val plane = image.planes[0]
+                val width = plane.rowStride / plane.pixelStride
+                val bitmap = if (width > image.width) {
+                    val paddedBitmap = createBitmap(width, image.height)
+                    try {
+                        paddedBitmap.copyPixelsFromBuffer(plane.buffer)
+                        Bitmap.createBitmap(paddedBitmap, 0, 0, image.width, image.height)
+                    } finally {
+                        paddedBitmap.recycle()
+                    }
+                } else {
+                    createBitmap(image.width, image.height).also {
+                        it.copyPixelsFromBuffer(plane.buffer)
+                    }
+                }
+                server.setBitmap(bitmap)
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -70,41 +77,30 @@ class ScreenCaptureService : Service() {
     }
     private val mediaProjectionStopCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            handler?.post {
-                virtualDisplay?.release()
-                imageReader?.setOnImageAvailableListener(null, null)
-                orientationChangeCallback?.disable()
-                mediaProjection?.unregisterCallback(this)
-            }
+            serviceHandler.post { releaseProjectionResources() }
         }
 
         override fun onCapturedContentResize(width: Int, height: Int) {
-            if (currentWidth == width && currentHeight == height) {
+            HttpServer.Settings.sourceWidth = width
+            HttpServer.Settings.sourceHeight = height
+
+            val captureSize = scaledSize(width, height, HttpServer.Settings.maxCaptureDimension)
+            if (currentWidth == captureSize.first && currentHeight == captureSize.second) {
                 return
             }
 
             imageReader?.surface?.release()
             imageReader?.close()
-            imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+            imageReader = ImageReader.newInstance(captureSize.first, captureSize.second, PixelFormat.RGBA_8888, 2)
             imageReader?.setOnImageAvailableListener(imageAvailableListener, imageThreadHandler)
-            virtualDisplay?.resize(width, height, density)
+            virtualDisplay?.resize(captureSize.first, captureSize.second, density)
             virtualDisplay?.surface = imageReader?.surface
-            currentWidth = width
-            currentHeight = height
+            currentWidth = captureSize.first
+            currentHeight = captureSize.second
+            lastDeliveredFrameTimestampNs = 0L
         }
     }
     private var httpServer: HttpServer? = null
-
-    init {
-        object : Thread() {
-            override fun run() {
-                Looper.prepare()
-                handler = Handler()
-                Looper.loop()
-            }
-        }.start()
-        imageThread.start()
-    }
 
     override fun onBind(intent: Intent): IBinder? {
         return null
@@ -120,8 +116,11 @@ class ScreenCaptureService : Service() {
                     notification.second,
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
                 )
+            } else {
+                startForeground(notification.first, notification.second)
             }
 
+            ensureImageThread()
             httpServer = HttpServer(
                 context = this,
                 onStop = { stopService(this) },
@@ -130,14 +129,16 @@ class ScreenCaptureService : Service() {
             // start projection
             startProjection(
                 intent.getIntExtra(RESULT_CODE, Activity.RESULT_CANCELED),
-                intent.getParcelableExtra(DATA),
+                intent.parcelableExtra(DATA),
             )
         } else if (isStopCommand(intent)) {
             stopProjection()
-            runBlocking(Dispatchers.Unconfined) {
+            runBlocking {
                 httpServer?.destroy()
             }
-            imageThread.quit()
+            httpServer = null
+            shutdownImageThread()
+            stopForegroundCompat()
             stopSelf()
         } else {
             stopSelf()
@@ -150,7 +151,7 @@ class ScreenCaptureService : Service() {
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (mediaProjection == null && data != null) {
             mediaProjection = mpManager.getMediaProjection(resultCode, data)
-            mediaProjection?.registerCallback(mediaProjectionStopCallback, handler)
+            mediaProjection?.registerCallback(mediaProjectionStopCallback, serviceHandler)
 
             // register orientation change callback
             orientationChangeCallback = object : OrientationEventListener(this) {
@@ -190,8 +191,15 @@ class ScreenCaptureService : Service() {
             wm.defaultDisplay.getRealSize(size)
             bounds = Rect(0, 0, size.x, size.y)
         }
-        currentWidth = bounds.width()
-        currentHeight = bounds.height()
+        val sourceWidth = bounds.width()
+        val sourceHeight = bounds.height()
+        HttpServer.Settings.sourceWidth = sourceWidth
+        HttpServer.Settings.sourceHeight = sourceHeight
+
+        val captureSize = scaledSize(sourceWidth, sourceHeight, HttpServer.Settings.maxCaptureDimension)
+        currentWidth = captureSize.first
+        currentHeight = captureSize.second
+        lastDeliveredFrameTimestampNs = 0L
 
         // start capture reader
         imageReader = ImageReader.newInstance(currentWidth, currentHeight, PixelFormat.RGBA_8888, 2)
@@ -203,9 +211,53 @@ class ScreenCaptureService : Service() {
     }
 
     private fun stopProjection() {
-        handler?.post {
+        serviceHandler.post {
             mediaProjection?.stop()
         }
+    }
+
+    private fun releaseProjectionResources() {
+        virtualDisplay?.release()
+        virtualDisplay = null
+        imageReader?.setOnImageAvailableListener(null, null)
+        imageReader?.surface?.release()
+        imageReader?.close()
+        imageReader = null
+        orientationChangeCallback?.disable()
+        orientationChangeCallback = null
+        mediaProjection?.unregisterCallback(mediaProjectionStopCallback)
+        mediaProjection = null
+        currentWidth = 0
+        currentHeight = 0
+        currentRotation = 0
+        lastDeliveredFrameTimestampNs = 0L
+        HttpServer.Settings.sourceWidth = 0
+        HttpServer.Settings.sourceHeight = 0
+    }
+
+    private fun ensureImageThread() {
+        if (imageThread?.isAlive == true && imageThreadHandler != null) return
+        imageThread = HandlerThread("ImageThread").also { thread ->
+            thread.start()
+            imageThreadHandler = Handler(thread.looper)
+        }
+    }
+
+    private fun shutdownImageThread() {
+        imageThreadHandler = null
+        imageThread?.quitSafely()
+        imageThread = null
+    }
+
+    override fun onDestroy() {
+        releaseProjectionResources()
+        shutdownImageThread()
+        stopForegroundCompat()
+        super.onDestroy()
+    }
+
+    private fun stopForegroundCompat() {
+        stopForeground(STOP_FOREGROUND_REMOVE)
     }
 
     object NotificationUtils {
@@ -231,7 +283,6 @@ class ScreenCaptureService : Service() {
                 .setPriority(NotificationCompat.PRIORITY_LOW)
                 .setShowWhen(true)
                 .build()
-            notificationManager.notify(NOTIFICATION_ID, notification)
             return NOTIFICATION_ID to notification
         }
     }
@@ -271,5 +322,24 @@ class ScreenCaptureService : Service() {
 
         private val virtualDisplayFlags: Int
             get() = DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION //VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY | DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC;
+
+        private fun scaledSize(width: Int, height: Int, maxDimension: Int): Pair<Int, Int> {
+            if (maxDimension <= 0) return width to height
+            val longestSide = maxOf(width, height)
+            if (longestSide <= maxDimension) return width to height
+
+            val scale = maxDimension.toFloat() / longestSide
+            return (width * scale).roundToInt().coerceAtLeast(1) to
+                    (height * scale).roundToInt().coerceAtLeast(1)
+        }
+
+        private inline fun <reified T : android.os.Parcelable> Intent.parcelableExtra(key: String): T? {
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getParcelableExtra(key, T::class.java)
+            } else {
+                @Suppress("DEPRECATION")
+                getParcelableExtra(key)
+            }
+        }
     }
 }

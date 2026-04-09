@@ -1,13 +1,10 @@
 package com.app.screensharing
 
 import android.Manifest.permission.POST_NOTIFICATIONS
-import android.R.attr
-import android.R.attr.label
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Color
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.Bundle
@@ -21,12 +18,13 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.graphics.toColorInt
 import androidx.core.content.ContextCompat
 import androidx.core.widget.doAfterTextChanged
-import androidx.core.graphics.toColorInt
 
 class MainActivity : AppCompatActivity() {
     private lateinit var mediaProjectionManager: MediaProjectionManager
+    private lateinit var tvIpAddress: TextView
     private val startMediaProjection = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == RESULT_OK) {
             ScreenCaptureService.startService(this, RESULT_OK, it.data)
@@ -42,8 +40,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         mediaProjectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
 
-        findViewById<TextView>(R.id.tvIpAddress).apply {
-            text = HttpServer.getLocalIpAddress()?.plus(":${HttpServer.PORT}")
+        tvIpAddress = findViewById<TextView>(R.id.tvIpAddress).apply {
+            text = buildServerAddress()
             setOnClickListener {
                 val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("IP Address", text))
@@ -86,13 +84,16 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
-        super.onBackPressed()
-        finish()
+    override fun onResume() {
+        super.onResume()
+        tvIpAddress.text = buildServerAddress()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         ScreenCaptureService.stopService(this)
     }
+
+    private fun buildServerAddress(): String =
+        HttpServer.getLocalIpAddress()?.plus(":${HttpServer.PORT}") ?: "Unavailable"
 }
