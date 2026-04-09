@@ -178,20 +178,6 @@
       }
     }
   </style>
-  <script type="text/javascript" src="https://www.datadoghq-browser-agent.com/us1/v5/datadog-logs.js" crossorigin="anonymous"></script>
-  <script>
-    "use strict";
-
-    window.DD_LOGS && DD_LOGS.init({
-      clientToken: "pub26fc6543f9239240ed8ae545593f921f",
-      site: "datadoghq.com",
-      forwardConsoleLogs: ["info", "warn", "error"],
-      forwardReports: "all",
-      service: '%DD_SERVICE%'
-    });
-    window.DD_LOGS && DD_LOGS.logger.setHandler(DD_HANDLER);
-    window.DD_LOGS && DD_LOGS.setGlobalContextProperty('version', '%APP_VERSION%');
-  </script>
 </head>
 
 <body>
@@ -337,7 +323,6 @@
         websocket.send(JSON.stringify({
           type: "CONNECT"
         }));
-        connectDiv.style.visibility = "hidden";
       };
       websocket.onreconnect = function () {
         connectDiv.style.visibility = "visible";
@@ -422,6 +407,7 @@
         stream.src = url;
       }).then(function () {
         MJPEGErrorCounter = 0;
+        connectDiv.style.visibility = "hidden";
         streamDiv.style.visibility = "visible";
         window.DD_LOGS && DD_LOGS.logger.debug("showStream", {
           mode: "default",
@@ -433,6 +419,7 @@
           result: "error"
         });
         MJPEGErrorCounter++;
+        connectDiv.style.visibility = "visible";
         if (MJPEGErrorCounter > 5) {
           streamDiv.style.visibility = "visible";
           var splitUrl = url.split(".mjpeg");

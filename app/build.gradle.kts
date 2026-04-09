@@ -45,7 +45,6 @@ dependencies {
     androidTestImplementation(libs.androidx.espresso.core)
 
     implementation(libs.ktor.server.cio)
-    implementation(libs.ktor.server.compression)
     implementation(libs.ktor.server.caching.headers)
     implementation(libs.ktor.server.default.headers)
     implementation(libs.ktor.server.forwarded.header)

@@ -21,9 +21,6 @@ import io.ktor.server.engine.applicationEngineEnvironment
 import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.plugins.cachingheaders.CachingHeaders
-import io.ktor.server.plugins.compression.Compression
-import io.ktor.server.plugins.compression.deflate
-import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.defaultheaders.DefaultHeaders
 import io.ktor.server.plugins.forwardedheaders.ForwardedHeaders
 import io.ktor.server.plugins.origin
@@ -49,16 +46,12 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.filter
-import kotlinx.coroutines.flow.flatMapLatest
-import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onCompletion
 import kotlinx.coroutines.flow.onEach
@@ -77,6 +70,7 @@ import java.net.SocketException
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import androidx.core.graphics.createBitmap
 
 fun Context.getFileFromAssets(fileName: String): ByteArray {
     return assets.open(fileName).use { inputStream -> inputStream.readBytes() }
@@ -111,10 +105,11 @@ internal class HttpServer(
 //        .replace("%APP_VERSION%", "context.getVersionName()")
 
     private val indexHtml = AtomicReference(baseIndexHtml)
-    private val lastJPEG = AtomicReference(ByteArray(0))
+
+    //    private val lastJPEG = AtomicReference(ByteArray(0))
     private val serverData = HttpServerData()
     private val ktorServer = AtomicReference<Pair<CIOApplicationEngine, CompletableDeferred<Unit>>>(null)
-    private val bitmapStateFlow = MutableStateFlow(Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888))
+    private val bitmapStateFlow = MutableStateFlow(createBitmap(1, 1))
     private val coroutineScope = CoroutineScope(Job() + Dispatchers.Default)
 
     fun setBitmap(bitmap: Bitmap) {
@@ -255,10 +250,6 @@ internal class HttpServer(
         val contentType = ContentType.parse("multipart/x-mixed-replace; boundary=$multipartBoundary")
         val jpegBoundary = "--$multipartBoundary\r\n".toByteArray()
 
-        install(Compression) {
-            gzip()
-            deflate()
-        }
         install(CachingHeaders) { options { _, _ -> CachingOptions(CacheControl.NoStore(CacheControl.Visibility.Private)) } }
         install(DefaultHeaders) { header(HttpHeaders.AccessControlAllowOrigin, "*") }
         install(ForwardedHeaders)
@@ -334,9 +325,8 @@ internal class HttpServer(
                             }
                         }
                     }
-                } catch (ignore: CancellationException) {
                 } catch (cause: Exception) {
-                    //XLog.w(this@appModule.getLog("socket", "catch: ${cause.localizedMessage}"), cause)
+                    logE("socket catch: $cause")
                 } finally {
                     logE("socket finally: $clientId")
                     serverData.removeSocket(clientId)
@@ -424,8 +414,8 @@ internal class HttpServer(
                     val enumIpAddr = en.nextElement().inetAddresses
                     while (enumIpAddr.hasMoreElements()) {
                         val inetAddress = enumIpAddr.nextElement()
-                        if (!inetAddress.isLoopbackAddress && inetAddress is Inet4Address) {
-                            return inetAddress.getHostAddress()
+                        if (inetAddress.isSiteLocalAddress && inetAddress is Inet4Address) {
+                            return inetAddress.hostAddress
                         }
                     }
                 }
